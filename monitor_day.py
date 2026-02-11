@@ -15,7 +15,7 @@ from decision_graph import root_cause_graph
 init_db()
 
 # ------------------------------------------------
-# 2. Load NEW DAY data (this is Day N+1)
+# 2. Load NEW DAY insurance data (Day N+1)
 # ------------------------------------------------
 sql_file = open("sample_data.sql").read()
 statements = [s.strip() for s in sql_file.split(";") if s.strip()]
@@ -24,65 +24,83 @@ with engine.begin() as conn:
     for stmt in statements:
         conn.exec_driver_sql(stmt)
 
-print("📅 Loaded new day data")
+print("📅 Loaded new insurance data")
 
 # ------------------------------------------------
-# 3. Execute metric (ONE data point only)
+# 3. Insurance Metrics to Monitor
 # ------------------------------------------------
-metric_sql = open("metrics.sql").read()
-metric_id = metric_id_from_sql(metric_sql)
-
-df = execute_metric(metric_sql)
-
-# 🔑 MONITOR MODE → append ONLY latest date
-append_history(metric_id, df, mode="monitor")
-
-# ------------------------------------------------
-# 4. Load history (exclude current point)
-# ------------------------------------------------
-history_df = pd.read_sql(
-    f"""
-    SELECT date, value
-    FROM metric_history
-    WHERE metric_id = '{metric_id}'
-    ORDER BY date
-    """,
-    engine
-)
-
-history_values = history_df["value"].iloc[:-1]
-current_value = history_df["value"].iloc[-1]
+metric_files = {
+    "Daily Claim Amount": "metrics/daily_claim_amount.sql",
+    "Claim Approval Rate": "metrics/approval_rate.sql",
+    "Avg Processing Time": "metrics/avg_processing_time.sql",
+    "Avg Claim Amount": "metrics/avg_claim_amount.sql"
+}
 
 # ------------------------------------------------
-# 5. HARD DEBUG (leave this while learning)
+# 4. Run Monitoring for EACH metric
 # ------------------------------------------------
-print("---- DEBUG START ----")
-print("HISTORY VALUES:", list(history_values))
-print("CURRENT VALUE:", current_value)
-print("HISTORY MEAN:", history_values.mean())
-print("HISTORY STD:", history_values.std())
-print("HISTORY LENGTH:", len(history_values))
-print("---- DEBUG END ----")
+for metric_name, metric_path in metric_files.items():
 
-# ------------------------------------------------
-# 6. Detect anomaly
-# ------------------------------------------------
-is_anomaly, z = detect_anomaly(history_values, current_value)
-trust = calculate_trust_score(is_anomaly)
+    print(f"\n📊 Monitoring Metric: {metric_name}")
 
-print(f"Trust Score: {trust}")
+    metric_sql = open(metric_path).read()
+    metric_id = metric_id_from_sql(metric_sql)
 
-# ------------------------------------------------
-# 7. Explain if anomaly
-# ------------------------------------------------
-if is_anomaly:
-    result = root_cause_graph.invoke({
-        "metric": metric_id,
-        "value": current_value,
-        "z_score": z,
-        "pipeline_ok": True
-    })
-    print("\n🚨 ALERT")
-    print(result["explanation"])
-else:
-    print("✅ Metric within normal range")
+    # Execute metric query
+    df = execute_metric(metric_sql)
+
+    # Append only latest day (monitor mode)
+    append_history(metric_id, df, mode="monitor")
+
+    # ------------------------------------------------
+    # 5. Load historical values
+    # ------------------------------------------------
+    history_df = pd.read_sql(
+        f"""
+        SELECT date, value
+        FROM metric_history
+        WHERE metric_id = '{metric_id}'
+        ORDER BY date
+        """,
+        engine
+    )
+
+    if len(history_df) < 4:
+        print("⚠️ Not enough history yet, skipping anomaly detection")
+        continue
+
+    history_values = history_df["value"].iloc[:-1]
+    current_value = history_df["value"].iloc[-1]
+
+    # ------------------------------------------------
+    # 6. Debug (keep during demos)
+    # ------------------------------------------------
+    print("---- DEBUG ----")
+    print("History:", list(history_values))
+    print("Current:", current_value)
+    print("Mean:", history_values.mean())
+    print("Std :", history_values.std())
+    print("--------------")
+
+    # ------------------------------------------------
+    # 7. Detect anomaly
+    # ------------------------------------------------
+    is_anomaly, z = detect_anomaly(history_values, current_value)
+    trust = calculate_trust_score(is_anomaly)
+
+    print(f"Trust Score: {trust}")
+
+    # ------------------------------------------------
+    # 8. AI Explanation if anomaly
+    # ------------------------------------------------
+    if is_anomaly:
+        result = root_cause_graph.invoke({
+            "metric": metric_name,
+            "value": current_value,
+            "z_score": z,
+            "pipeline_ok": True
+        })
+        print("🚨 ALERT")
+        print(result["explanation"])
+    else:
+        print("✅ Metric within normal range")
